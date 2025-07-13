@@ -1,27 +1,30 @@
 import os
 import requests
 from dotenv import load_dotenv
-from langchain.llms.base import LLM
+from langchain_core.language_models import LLM
 from langchain.chains import RetrievalQA
-from langchain.document_loaders import TextLoader
-from langchain.embeddings.base import Embeddings
-from langchain.vectorstores import Chroma
+from langchain_community.document_loaders import TextLoader
+from langchain_core.embeddings import Embeddings
+from langchain_community.vectorstores import Chroma  # 修正导入路径
 from typing import Any, List, Optional, Mapping
 
 # 加载环境变量
 load_dotenv()
 
 
-class SiliconFlowLLM(LLM):
-    """自定义硅基流动语言模型封装"""
+class DeepSeekLLM(LLM):
+    """DeepSeek语言模型封装"""
 
     @property
     def _llm_type(self) -> str:
-        return "siliconflow"
+        return "deepseek"
 
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        api_key = os.getenv("SILICONFLOW_API_KEY")
-        model = os.getenv("MODEL_NAME", "SiliconFlow/GLM4-9B-Chat")
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            return "错误: 未找到DEEPSEEK_API_KEY环境变量"
+
+        model = os.getenv("MODEL_NAME", "deepseek-chat")
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -31,28 +34,38 @@ class SiliconFlowLLM(LLM):
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 1024,
-            "temperature": 0.7
+            "max_tokens": 512,
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "stream": False
         }
 
         try:
             response = requests.post(
-                "https://api.siliconflow.cn/v1/chat/completions",
+                "https://api.deepseek.com/v1/chat/completions",
                 headers=headers,
-                json=payload
+                json=payload,
+                timeout=30
             )
-            response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
+
+            if response.status_code == 200:
+                return response.json()["choices"][0]["message"]["content"]
+            else:
+                return f"API错误: {response.status_code} - {response.text}"
+
         except Exception as e:
-            return f"Error: {str(e)}"
+            return f"请求失败: {str(e)}"
 
 
-class SiliconFlowEmbeddings(Embeddings):
-    """自定义硅基流动嵌入模型封装"""
+class DeepSeekEmbeddings(Embeddings):
+    """DeepSeek嵌入模型封装"""
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        api_key = os.getenv("SILICONFLOW_API_KEY")
-        model = os.getenv("EMBEDDING_MODEL", "text-embedding-v1")
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+
+        if not api_key:
+            return [[0.0] * 1536 for _ in texts]
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -64,14 +77,19 @@ class SiliconFlowEmbeddings(Embeddings):
             payload = {"input": text, "model": model}
             try:
                 response = requests.post(
-                    "https://api.siliconflow.cn/v1/embeddings",
+                    "https://api.deepseek.com/v1/embeddings",
                     headers=headers,
-                    json=payload
+                    json=payload,
+                    timeout=15
                 )
-                response.raise_for_status()
-                embeddings.append(response.json()["data"][0]["embedding"])
-            except:
-                embeddings.append([0.0] * 768)  # 返回空嵌入作为后备
+                if response.status_code == 200:
+                    embeddings.append(response.json()["data"][0]["embedding"])
+                else:
+                    print(f"嵌入错误: {response.status_code} - {response.text}")
+                    embeddings.append([0.0] * 1536)
+            except Exception as e:
+                print(f"请求失败: {str(e)}")
+                embeddings.append([0.0] * 1536)
 
         return embeddings
 
@@ -82,10 +100,10 @@ class SiliconFlowEmbeddings(Embeddings):
 class ProfessionalQAAgent:
     def __init__(self):
         # 初始化大模型
-        self.llm = SiliconFlowLLM()
+        self.llm = DeepSeekLLM()
 
         # 初始化嵌入模型
-        self.embeddings = SiliconFlowEmbeddings()
+        self.embeddings = DeepSeekEmbeddings()
 
         # 知识库初始化
         self.knowledge_base = None
@@ -112,18 +130,17 @@ class ProfessionalQAAgent:
                 retriever=self.knowledge_base,
                 return_source_documents=True
             )
-            result = qa_chain({"query": question})
+            result = qa_chain.invoke({"query": question})
             return {
                 "answer": result["result"],
                 "sources": [doc.metadata["source"] for doc in result["source_documents"]]
             }
         else:
-            # 直接使用模型生成答案
-            return {"answer": self.llm(question)}
+            return {"answer": self.llm.invoke(question)}
 
     def cli_interaction(self):
         """命令行交互界面"""
-        print("专业问答AI助手 (硅基流动版) | 输入'exit'退出")
+        print("专业问答AI助手 (DeepSeek版) | 输入'exit'退出")
         while True:
             query = input("\n问题: ")
             if query.lower() == 'exit':
